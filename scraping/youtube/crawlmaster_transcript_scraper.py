@@ -331,7 +331,28 @@ class YouTubeChannelTranscriptScraper(Scraper):
         )
         run_input = {"url": youtube_url, "lang": language}
         try:
-            result = await self.runner.run(run_config, run_input)
+            # Call actor directly to get run object for store ID access
+            client = ApifyClientAsync(run_config.api_key)
+            run = await client.actor(run_config.actor_id).call(
+                run_input=run_input,
+                max_items=run_config.max_data_entities,
+                timeout_secs=run_config.timeout_secs,
+                wait_secs=run_config.timeout_secs + 5,
+                memory_mbytes=run_config.memory_mb,
+            )
+            
+            # Check run status
+            if "status" not in run or not (
+                run["status"].casefold() == "SUCCEEDED".casefold()
+                or run["status"].casefold() == "TIMED-OUT".casefold()
+            ):
+                raise ActorRunError(
+                    f"Actor ({run_config.actor_id}) [{run_config.debug_info}] failed: {run}"
+                )
+            
+            # Get results from dataset
+            iterator = client.dataset(run["defaultDatasetId"]).iterate_items()
+            result = [i async for i in iterator]
 
             # Assume result is list of dict, take first if available
             if result and isinstance(result, list) and len(result) > 0:
@@ -340,7 +361,8 @@ class YouTubeChannelTranscriptScraper(Scraper):
                 # Check if kv_ref exists and fetch full transcript if needed
                 if 'kv_ref' in meta_data and meta_data['kv_ref']:
                     bt.logging.info(f"Detected kv_ref for video {video_id}, fetching full transcript from KV store")
-                    meta_data = await self._fetch_transcript_from_kv(meta_data, run_config)
+                    # Pass the run object to get the default store ID
+                    meta_data = await self._fetch_transcript_from_kv(meta_data, run_config, run)
                 
                 return meta_data
             return None
@@ -348,13 +370,14 @@ class YouTubeChannelTranscriptScraper(Scraper):
             bt.logging.error(f"Actor run error for video {video_id}: {str(e)}")
             return None
         
-    async def _fetch_transcript_from_kv(self, meta_data: Dict[str, Any], run_config: RunConfig) -> Optional[Dict[str, Any]]:
+    async def _fetch_transcript_from_kv(self, meta_data: Dict[str, Any], run_config: RunConfig, run: Dict[str, Any] = None) -> Optional[Dict[str, Any]]:
         """
         Fetch full transcript from Apify Key-Value store when kv_ref is present.
         
         Args:
             meta_data: The metadata dict containing kv_ref
             run_config: The run configuration with API key
+            run: The actor run object (optional, used to get default store ID)
             
         Returns:
             Updated meta_data with full transcript, or None if fetch fails
@@ -371,6 +394,17 @@ class YouTubeChannelTranscriptScraper(Scraper):
                 bt.logging.error(f"No kv_key found in kv_ref: {kv_ref}")
                 return None
             
+            # If store is 'default', use the run's default key-value store ID
+            if store_id == 'default':
+                if run and 'defaultKeyValueStoreId' in run:
+                    store_id = run['defaultKeyValueStoreId']
+                    bt.logging.info(f"Resolved 'default' store to actual store ID: {store_id}")
+                else:
+                    bt.logging.error(f"'default' store specified but no defaultKeyValueStoreId in run object")
+                    if run:
+                        bt.logging.error(f"Run object keys: {list(run.keys())}")
+                    return None
+            
             bt.logging.info(f"Fetching transcript from KV store '{store_id}' with key '{kv_key}'")
             
             # Create Apify client and fetch from key-value store
@@ -378,14 +412,20 @@ class YouTubeChannelTranscriptScraper(Scraper):
             
             # Access the key-value store and get the record
             kv_store_client = client.key_value_store(store_id)
+            bt.logging.debug(f"KV store client created for store ID: {store_id}")
             record = await kv_store_client.get_record(kv_key)
-            
+            bt.logging.debug(f"Successfully fetched record from KV store for key '{kv_key}'")
             if not record or 'value' not in record:
                 bt.logging.error(f"Failed to fetch record from KV store for key '{kv_key}'")
                 return None
             
             # The record value should contain the full transcript array
-            full_transcript = record['value']
+            record_value = record['value']
+            if record_value['transcript_found']:
+                full_transcript = record_value['transcript']
+            else:
+                bt.logging.warning(f"No transcript found in KV store for key '{kv_key}'")
+                return None
             
             if isinstance(full_transcript, list):
                 # Replace the transcript preview with the full transcript
