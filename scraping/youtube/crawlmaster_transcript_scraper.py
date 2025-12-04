@@ -148,7 +148,8 @@ class YouTubeChannelTranscriptScraper(Scraper):
             if end_date is not None:
                 run_input["end_date"] = end_date
 
-            result = await self.runner.run(run_config, run_input)
+            # Use run_with_metadata to get both result and run object for store ID access
+            result, run = await self.runner.run_with_metadata(run_config, run_input)
 
             # Assume result is list of video dicts
             if not result or not isinstance(result, list):
@@ -160,7 +161,7 @@ class YouTubeChannelTranscriptScraper(Scraper):
                 # Check if kv_ref exists and fetch full transcript if needed
                 if 'kv_ref' in meta_data and meta_data['kv_ref']:
                     bt.logging.info(f"Detected kv_ref for video {meta_data.get('video_id')}, fetching full transcript from KV store")
-                    meta_data = await self._fetch_transcript_from_kv(meta_data, run_config)
+                    meta_data = await self._fetch_transcript_from_kv(meta_data, run_config, run)
                     if not meta_data:
                         bt.logging.warning(f"Failed to fetch transcript from KV store for video {meta_data.get('video_id')}")
                         continue
@@ -331,28 +332,8 @@ class YouTubeChannelTranscriptScraper(Scraper):
         )
         run_input = {"url": youtube_url, "lang": language}
         try:
-            # Call actor directly to get run object for store ID access
-            client = ApifyClientAsync(run_config.api_key)
-            run = await client.actor(run_config.actor_id).call(
-                run_input=run_input,
-                max_items=run_config.max_data_entities,
-                timeout_secs=run_config.timeout_secs,
-                wait_secs=run_config.timeout_secs + 5,
-                memory_mbytes=run_config.memory_mb,
-            )
-            
-            # Check run status
-            if "status" not in run or not (
-                run["status"].casefold() == "SUCCEEDED".casefold()
-                or run["status"].casefold() == "TIMED-OUT".casefold()
-            ):
-                raise ActorRunError(
-                    f"Actor ({run_config.actor_id}) [{run_config.debug_info}] failed: {run}"
-                )
-            
-            # Get results from dataset
-            iterator = client.dataset(run["defaultDatasetId"]).iterate_items()
-            result = [i async for i in iterator]
+            # Use run_with_metadata to get both result and run object for store ID access
+            result, run = await self.runner.run_with_metadata(run_config, run_input)
 
             # Assume result is list of dict, take first if available
             if result and isinstance(result, list) and len(result) > 0:

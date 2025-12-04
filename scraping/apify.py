@@ -1,5 +1,5 @@
 import os
-from typing import List, Optional
+from typing import List, Optional, Tuple, Dict, Any
 from apify_client import ApifyClientAsync
 from pydantic import BaseModel, Field, PositiveInt
 import bittensor as bt
@@ -94,3 +94,45 @@ class ActorRunner:
         items = [i async for i in iterator]
 
         return items
+
+    async def run_with_metadata(self, config: RunConfig, run_input: dict) -> Tuple[List[dict], Dict[str, Any]]:
+        """
+        Run an Apify actor and return both the json results and the run object.
+        
+        This is useful when you need access to run metadata like defaultKeyValueStoreId.
+
+        Args:
+            config (RunConfig): The configuration to use for running the actor.
+            run_input (dict): The input parameters for the actor run.
+
+        Raises:
+            ActorRunError: If the actor run fails, raises an exception, with the run details in the exception message.
+
+        Returns:
+            Tuple[List[dict], Dict[str, Any]]: A tuple of (items, run_object) where:
+                - items: List of items fetched from the dataset
+                - run_object: The run object containing metadata like defaultKeyValueStoreId
+        """
+        client = ApifyClientAsync(config.api_key)
+
+        run = await client.actor(config.actor_id).call(
+            run_input=run_input,
+            max_items=config.max_data_entities,
+            timeout_secs=config.timeout_secs,
+            # If not set, the client will wait indefinitely for the run to finish. Ensure we don't wait forever.
+            wait_secs=config.timeout_secs + 5,
+            memory_mbytes=config.memory_mb,
+        )
+
+        # We want a success status. Timeout is also okay because it will return partial results.
+        if "status" not in run or not (
+            run["status"].casefold() == "SUCCEEDED".casefold()
+            or run["status"].casefold() == "TIMED-OUT".casefold()
+        ):
+            raise ActorRunError(
+                f"Actor ({config.actor_id}) [{config.debug_info}] failed: {run}"
+            )
+        iterator = client.dataset(run["defaultDatasetId"]).iterate_items()
+        items = [i async for i in iterator]
+
+        return items, run
