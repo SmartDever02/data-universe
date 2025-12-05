@@ -95,18 +95,16 @@ def extract_count_from_filename(file_path: str) -> int:
     """
     Extract claimed record count from miner filename for dashboard metrics
 
-    Filename format: data_{YYYYMMDD_HHMMSS}_{record_count}_{16_char_hex}.parquet
-    Example: data_20250804_150058_9999_4yk9nu3ghiqjmv6c.parquet -> 9999
+    DEPRECATED: Filename format no longer includes count.
+    This function is kept for backwards compatibility but always returns 0.
 
     Args:
         file_path: Full S3 path or just filename
 
     Returns:
-        Record count as integer, or 0 if invalid format
+        0 (count no longer in filename)
     """
-    # Case-insensitive hex pattern to handle both upper and lowercase
-    match = re.search(r'data_\d{8}_\d{6}_(\d+)_[a-fA-F0-9]{16}\.parquet', file_path)
-    return int(match.group(1)) if match else 0
+    return 0
 
 
 def is_valid_filename_format(file_path: str) -> bool:
@@ -128,7 +126,7 @@ def is_valid_filename_format(file_path: str) -> bool:
         return True
 
     # After enforcement date, check format strictly
-    pattern = r'data_\d{8}_\d{6}_\d+_[a-fA-F0-9]{16}\.parquet$'
+    pattern = r'data_\d{8}_\d{6}_[a-fA-F0-9]{16}\.parquet$'
     return bool(re.search(pattern, file_path))
 
 
@@ -197,11 +195,11 @@ class S3Validator:
                     if now >= FILENAME_FORMAT_REQUIRED_DATE:
                         return self._create_failed_result(
                             f"Invalid filename format: {len(invalid_filenames)} files don't match required pattern "
-                            f"(data_YYYYMMDD_HHMMSS_count_16hex.parquet)"
+                            f"(data_YYYYMMDD_HHMMSS_16hex.parquet)"
                         )
 
-                # Extract claimed record counts from filenames for dashboard metrics
-                total_claimed_records = sum(extract_count_from_filename(f['key']) for f in all_files)
+                # Note: Filename no longer includes record count
+                total_claimed_records = 0
 
                 bt.logging.info(
                     f"{miner_hotkey}: Extracted {len(all_job_ids)} unique job IDs from {len(all_files)} files"
@@ -253,15 +251,7 @@ class S3Validator:
                 wallet, s3_auth_url, miner_hotkey, recent_data_analysis['recent_job_files']
             )
 
-            # Check for filename count mismatches (enforced after FILENAME_FORMAT_REQUIRED_DATE)
-            now = dt.datetime.now(dt.timezone.utc)
-            if now >= FILENAME_FORMAT_REQUIRED_DATE and 'count_mismatches' in duplicate_analysis:
-                count_mismatches = duplicate_analysis['count_mismatches']
-                if count_mismatches:
-                    return self._create_failed_result(
-                        f"Record count validation failed: {len(count_mismatches)} files have mismatched counts "
-                        f"(claimed vs actual records)"
-                    )
+            # Note: Count mismatch validation removed since filename no longer includes count
 
             # Step 5: Validate job content matching
             job_match_analysis = await self._check_job_content_match(
@@ -556,25 +546,7 @@ class S3Validator:
 
                     df = pd.read_parquet(presigned_url)
 
-                    # Validate filename record count matches actual
-                    claimed_count = extract_count_from_filename(file_key)
-                    actual_count = len(df)
-                    if claimed_count > 0 and claimed_count != actual_count:
-                        bt.logging.warning(
-                            f"{miner_hotkey}: Record count mismatch found: "
-                            f"claimed={claimed_count}, actual={actual_count}"
-                        )
-
-                        # After enforcement date, count mismatches are validation failures
-                        now = dt.datetime.now(dt.timezone.utc)
-                        if now >= FILENAME_FORMAT_REQUIRED_DATE:
-                            # Track mismatch for final validation decision
-                            if 'count_mismatches' not in duplicate_analysis:
-                                duplicate_analysis['count_mismatches'] = []
-                            duplicate_analysis['count_mismatches'].append({
-                                'claimed': claimed_count,
-                                'actual': actual_count
-                            })
+                    # Note: Filename no longer includes record count, so count validation is removed
 
                     # Sample rows to check for duplicates
                     sample_size = min(20, len(df))  # rows_per_file_sample = 20

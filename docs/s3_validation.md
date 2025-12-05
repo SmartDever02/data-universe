@@ -10,23 +10,22 @@ Miners upload scraped data to S3 via presigned URLs obtained from an auth server
 
 **Required Format:**
 ```
-data_{YYYYMMDD_HHMMSS}_{record_count}_{16_char_hex}.parquet
+data_{YYYYMMDD_HHMMSS}_{16_char_hex}.parquet
 ```
 
 **Components:**
 - `YYYYMMDD`: Date (e.g., `20250804`)
 - `HHMMSS`: Time (e.g., `150058`)
-- `record_count`: Integer representing actual row count in file
 - `16_char_hex`: 16-character hexadecimal string
 
-**Enforcement Date:** December 2, 2025
+**Enforcement Date:** December 9, 2025
 
 ---
 
 ## S3 Storage Structure
 
 ```
-s3://bucket/data/hotkey={miner_hotkey}/job_id={job_id}/data_{timestamp}_{count}_{hash}.parquet
+s3://bucket/data/hotkey={miner_hotkey}/job_id={job_id}/data_{timestamp}_{hash}.parquet
 ```
 
 Files are organized by miner hotkey and job ID. Each job corresponds to a specific data collection task (e.g., scraping Reddit politics, X bittensor hashtag).
@@ -44,8 +43,7 @@ Files are organized by miner hotkey and job ID. Each job corresponds to a specif
 
 2. **Data Preparation**
    - Create parquet file from scraped data
-   - Generate filename: `data_{timestamp}_{len(df)}_{secrets.token_hex(8)}.parquet`
-   - Record count must match actual DataFrame length
+   - Generate filename: `data_{timestamp}_{secrets.token_hex(8)}.parquet`
 
 3. **Upload**
    - Construct S3 path: `job_id={job_id}/{filename}`
@@ -66,30 +64,20 @@ Files are organized by miner hotkey and job ID. Each job corresponds to a specif
    - Extract metadata: file path, size, last modified time
 
 2. **Filename Format Check** (Step 1)
-   - Validate each filename against pattern: `data_\d{8}_\d{6}_\d+_[a-fA-F0-9]{16}\.parquet$`
+   - Validate each filename against pattern: `data_\d{8}_\d{6}_[a-fA-F0-9]{16}\.parquet$`
    - Collect invalid filenames
-   - **After Dec 2, 2025:** Fail validation if any invalid filenames found
+   - **After Dec 9, 2025:** Fail validation if any invalid filenames found
 
-3. **Dashboard Metrics Extraction** (Step 1)
-   - Parse filenames to extract claimed record counts
-   - Sum across all files: `total_claimed_records`
-   - Log for monitoring and dashboard display
-
-4. **Job Identification** (Step 1)
+3. **Job Identification** (Step 1)
    - Extract job IDs from file paths
    - Match against expected jobs from Gravity
    - Calculate job completion rate
 
-5. **Content Sampling** (Step 4)
+4. **Content Sampling** (Step 4)
    - Download sample files via presigned URLs
    - Load parquet files into DataFrames
 
-6. **Record Count Validation** (Step 4)
-   - Extract claimed count from filename
-   - Compare with actual: `len(df)`
-   - **After Dec 2, 2025:** Track mismatches, fail validation if any found
-
-7. **Quality Checks** (Steps 4-6)
+5. **Quality Checks** (Steps 4-6)
    - **Duplicate Detection:** Check for duplicate URIs across files
    - **Job Content Matching:** Verify data matches job requirements (hashtags, subreddits, etc.)
    - **Scraper Validation:** Re-scrape sample URIs to verify authenticity
@@ -102,8 +90,7 @@ Files are organized by miner hotkey and job ID. Each job corresponds to a specif
 
 | Check | Requirement | Enforcement | Implementation |
 |-------|-------------|-------------|----------------|
-| Filename Format | `data_YYYYMMDD_HHMMSS_count_16hex.parquet` | Dec 2, 2025 | `is_valid_filename_format()` |
-| Record Count | Claimed count = `len(df)` | Dec 2, 2025 | `extract_count_from_filename()` |
+| Filename Format | `data_YYYYMMDD_HHMMSS_16hex.parquet` | Dec 9, 2025 | `is_valid_filename_format()` |
 | Duplicate Rate | ≤10% | Active | URI deduplication across samples |
 | Scraper Success | ≥80% | Active | Re-scrape sampled entities |
 | Job Match Rate | ≥95% | Active | Content matching job criteria |
@@ -114,14 +101,6 @@ Files are organized by miner hotkey and job ID. Each job corresponds to a specif
 # Step 1: Format check
 if invalid_filenames and now >= FILENAME_FORMAT_REQUIRED_DATE:
     return _create_failed_result("Invalid filename format")
-
-# Step 4: Count check (during duplicate detection)
-if claimed_count != actual_count and now >= FILENAME_FORMAT_REQUIRED_DATE:
-    track_mismatch()
-
-# After Step 4: Check tracked mismatches
-if count_mismatches and now >= FILENAME_FORMAT_REQUIRED_DATE:
-    return _create_failed_result("Record count validation failed")
 
 # Continue to content validation
 if duplicate_percentage > 10%:
@@ -182,29 +161,15 @@ miner_reward = (miner_score / Σ(all_miner_scores)) × total_reward_pool
 
 ### Without Filename Validation
 
-- Miners can inflate metrics with incorrect counts
-- Dashboard shows inaccurate data volumes
-- No way to verify claimed record counts without downloading all files
-- Potential for gaming through filename manipulation
+- Inconsistent filename formats make file management difficult
+- No standardized way to identify files
+- Potential for filename collisions
 
 ### With Filename Validation
 
-- Record counts verifiable without downloading (efficient)
-- Dashboard metrics accurate for planning and analysis
-- Fraud detection via count mismatch warnings
-- Enforced standards improve data quality
-
-### Example Scenario
-
-**Miner claims large dataset:**
-```
-Filename: data_20250804_150058_999999_4yk9nu3ghiqjmv6c.parquet
-Claimed: 999,999 records
-Actual: 100 records
-```
-
-**Before Dec 2, 2025:** Warning logged, no penalty
-**After Dec 2, 2025:** Validation fails, miner_score = 0, reward = 0
+- Standardized filename format ensures consistency
+- Unique timestamps and hashes prevent collisions
+- Enforced standards improve data quality and traceability
 
 ---
 
@@ -218,9 +183,8 @@ Actual: 100 records
 ### Validator Implementation
 - **S3 Access:** `vali_utils/validator_s3_access.py`
 - **Validation Logic:** `vali_utils/s3_utils.py` (S3Validator class)
-- **Helper Functions:** Lines 93-131 (`extract_count_from_filename`, `is_valid_filename_format`)
+- **Helper Functions:** Lines 93-131 (`is_valid_filename_format`)
 - **Format Validation:** Lines 186-200
-- **Count Validation:** Lines 513-544, 256-263
 
 ### Configuration
 - **Enforcement Date:** `common/constants.py` line 49
@@ -243,5 +207,4 @@ Validators handle large datasets through pagination:
 ### Performance Optimizations
 
 - Filename validation performed on metadata only (no downloads)
-- Record count validation only on sampled files (duplicate check)
-- Dashboard metrics extracted via regex on file paths (O(n) complexity)
+- Efficient regex pattern matching on file paths (O(n) complexity)
