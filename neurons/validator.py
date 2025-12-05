@@ -672,6 +672,10 @@ class Validator:
         with self.lock:
             assert netuid == self.config.netuid
             self.metagraph = copy.deepcopy(metagraph)
+            
+            # Update organic_processor's metagraph to prevent stale hotkey lookups
+            if self.organic_processor is not None:
+                self.organic_processor.update_metagraph(self.metagraph)
 
         # Validator Health Checks
         hotkey = self.wallet.hotkey.ss58_address
