@@ -252,24 +252,41 @@ class PreferencesData(BaseModel):
     
     @staticmethod
     def _convert_to_new_format(sources: List[OldFormatPreference], hotkey: str) -> List[Job]:
-        """Convert old format to new format"""
+        """Convert old format to new format.
+        
+        Generates deterministic job IDs based on job parameters to ensure ID changes 
+        when parameters change. This fixes issue #744: Job ID should change when job parameters change.
+        """
+        # Lazy import to avoid circular import issues
+        from dynamic_desirability.desirability_retrieval import generate_deterministic_job_id
+        
         jobs = []
-        job_count = 0
         
         for source in sources:
             for label, weight in source.label_weights.items():
-                job_count += 1
-                job_id = f"{hotkey}_{job_count}"
+                # Create job parameters dict
+                job_params = {
+                    "keyword": None,
+                    "platform": source.source_name,
+                    "label": label,
+                    "post_start_datetime": None,
+                    "post_end_datetime": None
+                }
+                
+                # Generate deterministic ID based on parameters (consistent with fix for issue #744)
+                # Use first 8 characters of hotkey as prefix for readability
+                prefix = f"{hotkey[:8]}" if hotkey else "job"
+                job_id = generate_deterministic_job_id(job_params, prefix=prefix)
                 
                 jobs.append(Job(
                     id=job_id,
                     weight=float(weight),
                     params=JobParams(
-                        keyword=None,
-                        platform=source.source_name,
-                        label=label,
-                        post_start_datetime=None,
-                        post_end_datetime=None
+                        keyword=job_params["keyword"],
+                        platform=job_params["platform"],
+                        label=job_params["label"],
+                        post_start_datetime=job_params["post_start_datetime"],
+                        post_end_datetime=job_params["post_end_datetime"]
                     )
                 ))
         

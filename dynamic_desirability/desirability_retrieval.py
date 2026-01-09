@@ -7,6 +7,7 @@ from typing import Dict, Literal, Optional, Any
 import logging
 import shutil
 from datetime import datetime
+import hashlib
 import bittensor as bt
 from dynamic_desirability.chain_utils import ChainPreferenceStore, add_args
 from common import constants
@@ -76,11 +77,51 @@ def create_job_key(job_params: Dict[str, Any]) -> tuple[Optional[str], str, Opti
     return key
 
 
+def generate_deterministic_job_id(job_params: Dict[str, Any], prefix: str = "job") -> str:
+    """Generate a deterministic job ID based on all job parameters.
+    
+    This ensures that when job parameters change, the job ID changes automatically.
+    The ID is generated as a hash of all job parameters (keyword, platform, label, dates).
+    
+    Args:
+        job_params: Dictionary containing job parameters (keyword, platform, label, 
+                   post_start_datetime, post_end_datetime)
+        prefix: Optional prefix for the job ID (default: "job")
+    
+    Returns:
+        A deterministic job ID string (max 80 characters, no slashes)
+    """
+    # Create a stable string representation of job parameters
+    # Sort keys to ensure consistent ordering
+    param_str = json.dumps({
+        "keyword": job_params.get("keyword"),
+        "platform": job_params.get("platform"),
+        "label": job_params.get("label"),
+        "post_start_datetime": job_params.get("post_start_datetime"),
+        "post_end_datetime": job_params.get("post_end_datetime")
+    }, sort_keys=True, separators=(',', ':'))
+    
+    # Generate hash from parameters
+    hash_obj = hashlib.md5(param_str.encode('utf-8'))
+    hash_hex = hash_obj.hexdigest()
+    
+    # Use first 16 characters of hash for shorter IDs
+    # Format: prefix-hash (e.g., "job-83d611b21c994fa3")
+    job_id = f"{prefix}-{hash_hex[:16]}"
+    
+    # Ensure it doesn't exceed 80 characters (per Job model constraint)
+    if len(job_id) > 80:
+        job_id = job_id[:80]
+    
+    return job_id
+
+
 def calculate_total_weights(validator_data: Dict[str, Dict[str, Any]], default_json_path: str = DEFAULT_JSON_PATH,
                             total_vali_weight: float = TOTAL_VALI_WEIGHT) -> None:
     """Calculate total weights and write to total.json using the new job-based format.
     Compatible with both old label_weights format and new job-based format.
-    Preserves first submitter's custom IDs (or uses default)."""
+    Generates deterministic job IDs based on job parameters to ensure ID changes when parameters change.
+    This fixes issue #744: Job ID should change when job parameters change."""
     aggregated_jobs = {}  # Using complete job key to track unique jobs
     job_ids = {}  # Track the first ID for each job key
     subnet_weight = 1 - total_vali_weight
@@ -100,15 +141,18 @@ def calculate_total_weights(validator_data: Dict[str, Dict[str, Any]], default_j
                 for source in default_jobs:
                     platform = source["source_name"]
                     for label, weight in source["label_weights"].items():
+                        job_params = {
+                            "keyword": None,
+                            "platform": platform,
+                            "label": label,
+                            "post_start_datetime": None,
+                            "post_end_datetime": None
+                        }
+                        # Generate deterministic ID based on parameters
+                        job_id = generate_deterministic_job_id(job_params, prefix="default")
                         converted_jobs.append({
-                            "id": f"default_{len(converted_jobs)}",  # Generate ID for converted jobs
-                            "params": {
-                                "keyword": None,
-                                "platform": platform,
-                                "label": label,
-                                "post_start_datetime": None,
-                                "post_end_datetime": None
-                            },
+                            "id": job_id,
+                            "params": job_params,
                             "weight": weight
                         })
                 default_jobs = converted_jobs
@@ -122,8 +166,16 @@ def calculate_total_weights(validator_data: Dict[str, Dict[str, Any]], default_j
             job_params = job["params"]
                 
             job_key = create_job_key(job_params)
-            # Store the ID from default jobs (or generate one if missing)
-            job_ids[job_key] = job.get("id", f"default_{len(job_ids)}")
+            # Generate deterministic ID from job parameters to ensure ID changes when parameters change
+            # This fixes issue #744: Job ID should change when job parameters change
+            deterministic_id = generate_deterministic_job_id(job_params, prefix="default")
+            # If a custom ID is provided and matches deterministic ID, preserve it (for readability)
+            # Otherwise, use deterministic ID to ensure parameter changes result in ID changes
+            provided_id = job.get("id")
+            if provided_id and provided_id == deterministic_id:
+                job_ids[job_key] = provided_id
+            else:
+                job_ids[job_key] = deterministic_id
             aggregated_jobs[job_key] = {
                 "weight": job.get("weight", 1.0),
                 "params": job_params
@@ -153,15 +205,18 @@ def calculate_total_weights(validator_data: Dict[str, Dict[str, Any]], default_j
                 for source in validator_json:
                     platform = source["source_name"]
                     for label, weight in source["label_weights"].items():
+                        job_params = {
+                            "keyword": None,
+                            "platform": platform,
+                            "label": label,
+                            "post_start_datetime": None,
+                            "post_end_datetime": None
+                        }
+                        # Generate deterministic ID based on parameters
+                        job_id = generate_deterministic_job_id(job_params, prefix="aggregate")
                         converted_jobs.append({
-                            "id": f"aggregate_{len(converted_jobs)}",  # Generate ID for converted jobs
-                            "params": {
-                                "keyword": None,
-                                "platform": platform,
-                                "label": label,
-                                "post_start_datetime": None,
-                                "post_end_datetime": None
-                            },
+                            "id": job_id,
+                            "params": job_params,
                             "weight": weight
                         })
                 validator_json = converted_jobs
@@ -182,9 +237,20 @@ def calculate_total_weights(validator_data: Dict[str, Dict[str, Any]], default_j
             
             job_key = create_job_key(job_params)
             
-            # Store the first ID we encounter for this job key (to preserve custom IDs)
+            # Generate deterministic ID from job parameters to ensure ID changes when parameters change
+            # This fixes issue #744: Job ID should change when job parameters change
+            deterministic_id = generate_deterministic_job_id(job_params, prefix="job")
+            
+            # If this is the first time we see this job_key, use deterministic ID
+            # This ensures that when parameters change, a new job_key is created with a new ID
             if job_key not in job_ids:
-                job_ids[job_key] = job.get("id", f"aggregate_{len(job_ids)}")
+                # If a custom ID is provided and matches deterministic ID, preserve it (for readability)
+                # Otherwise, use deterministic ID to ensure parameter changes result in ID changes
+                provided_id = job.get("id")
+                if provided_id and provided_id == deterministic_id:
+                    job_ids[job_key] = provided_id
+                else:
+                    job_ids[job_key] = deterministic_id
             
             weighted_job_value = vali_weight * job_weight / normalizer
             
@@ -350,6 +416,10 @@ def _dd_list_to_jobs_json(dd_list: DynamicDesirabilityList, apply_floor: bool = 
     Args:
         dd_list: The DD list from the API
         apply_floor: If True, applies MINIMUM_DD_SCALE floor to all weights (default: True)
+    
+    Note:
+        Generates deterministic job IDs based on job parameters to ensure ID changes when 
+        parameters change. This fixes issue #744: Job ID should change when job parameters change.
     """
     jobs = []
     for entry in dd_list.entries:
@@ -365,16 +435,29 @@ def _dd_list_to_jobs_json(dd_list: DynamicDesirabilityList, apply_floor: bool = 
         if apply_floor and weight < MINIMUM_DD_SCALE:
             weight = MINIMUM_DD_SCALE
 
+        # Create job params dict
+        job_params = {
+            "keyword": entry.keyword,
+            "platform": entry.platform,
+            "label": entry.label,
+            "post_start_datetime": post_start,
+            "post_end_datetime": post_end,
+        }
+        
+        # Generate deterministic ID from job parameters to ensure ID changes when parameters change
+        deterministic_id = generate_deterministic_job_id(job_params, prefix="job")
+        
+        # If provided ID matches deterministic ID, preserve it (for readability/backward compatibility)
+        # Otherwise, use deterministic ID to ensure parameter changes result in ID changes
+        if entry.id and entry.id == deterministic_id:
+            job_id = entry.id
+        else:
+            job_id = deterministic_id
+
         job = {
-            "id": entry.id,
+            "id": job_id,
             "weight": weight,
-            "params": {
-                "keyword": entry.keyword,
-                "platform": entry.platform,
-                "label": entry.label,
-                "post_start_datetime": post_start,
-                "post_end_datetime": post_end,
-            }
+            "params": job_params
         }
         jobs.append(job)
     return jobs
